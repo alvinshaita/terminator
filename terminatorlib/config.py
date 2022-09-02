@@ -76,7 +76,7 @@ from copy import copy
 from configobj import ConfigObj, flatten_errors
 from validate import Validator
 from .borg import Borg
-from .util import dbg, err, DEBUG, get_system_config_dir, get_config_dir, dict_diff
+from .util import dbg, err, DEBUG, get_system_config_dir, get_config_dir, dict_diff, update_config_to_cell_height
 
 from gi.repository import Gio
 
@@ -84,7 +84,7 @@ DEFAULTS = {
         'global_config':   {
             'dbus'                  : True,
             'focus'                 : 'click',
-            'handle_size'           : -1,
+            'handle_size'           : 1,
             'geometry_hinting'      : False,
             'window_state'          : 'normal',
             'borderless'            : False,
@@ -102,30 +102,23 @@ DEFAULTS = {
             'use_custom_url_handler': False,
             'custom_url_handler'    : '',
             'disable_real_transparency' : False,
-            'title_at_bottom'       : False,
-            'title_hide_sizetext'   : False,
-            'title_transmit_fg_color' : '#ffffff',
-            'title_transmit_bg_color' : '#c80003',
-            'title_receive_fg_color' : '#ffffff',
-            'title_receive_bg_color' : '#0076c9',
-            'title_inactive_fg_color' : '#000000',
-            'title_inactive_bg_color' : '#c0bebf',
             'inactive_color_offset': 0.8,
             'enabled_plugins'       : ['LaunchpadBugURLHandler',
                                        'LaunchpadCodeURLHandler',
                                        'APTURLHandler'],
             'suppress_multiple_term_dialog': False,
             'always_split_with_profile': False,
-            'title_use_system_font' : True,
-            'title_font'            : 'Sans 9',
             'putty_paste_style'     : False,
             'putty_paste_style_source_clipboard': False,
+            'disable_mouse_paste'   : False,
             'smart_copy'            : True,
             'clear_select_on_copy'  : False,
-            'line_height'           : 1.0,
+            'cell_width'            : 1.0,
+            'cell_height'           : 1.0,
             'case_sensitive'        : True,
             'invert_search'         : False,
             'link_single_click'     : False,
+            'title_at_bottom'       : False
         },
         'keybindings': {
             'zoom_in'          : '<Control>plus',
@@ -150,6 +143,7 @@ DEFAULTS = {
             'close_term'       : '<Shift><Control>w',
             'copy'             : '<Shift><Control>c',
             'paste'            : '<Shift><Control>v',
+            'paste_selection'  : '',
             'toggle_scrollbar' : '<Shift><Control>s',
             'search'           : '<Shift><Control>f',
             'page_up'          : '',
@@ -187,6 +181,9 @@ DEFAULTS = {
             'group_all'        : '<Super>g',
             'group_all_toggle' : '',
             'ungroup_all'      : '<Shift><Super>g',
+            'group_win'        : '',
+            'group_win_toggle' : '',
+            'ungroup_win'      : '<Shift><Super>w',
             'group_tab'        : '<Super>t',
             'group_tab_toggle' : '',
             'ungroup_tab'      : '<Shift><Super>t',
@@ -216,13 +213,15 @@ DEFAULTS = {
                 'background_color'      : '#000000',
                 'background_darkness'   : 0.5,
                 'background_type'       : 'solid',
+                'background_image'      : '',
                 'backspace_binding'     : 'ascii-del',
                 'delete_binding'        : 'escape-sequence',
                 'color_scheme'          : 'grey_on_black',
                 'cursor_blink'          : True,
                 'cursor_shape'          : 'block',
-                'cursor_color'          : '',
-                'cursor_color_fg'       : True,
+                'cursor_fg_color'       : '',
+                'cursor_bg_color'       : '',
+                'cursor_color_default'  : True,
                 'term'                  : 'xterm-256color',
                 'colorterm'             : 'truecolor',
                 'font'                  : 'Mono 10',
@@ -247,9 +246,8 @@ DEFAULTS = {
                 'use_system_font'       : True,
                 'use_theme_colors'      : False,
                 'bold_is_bright'        : False,
-                'line_height'           : 1.0,
-                'encoding'              : 'UTF-8',
-                'active_encodings'      : ['UTF-8', 'ISO-8859-1'],
+                'cell_height'           : 1.0,
+                'cell_width'            : 1.0,
                 'focus_on_close'        : 'auto',
                 'force_no_bell'         : False,
                 'cycle_term_tab'        : True,
@@ -258,8 +256,16 @@ DEFAULTS = {
                 'autoclean_groups'      : True,
                 'http_proxy'            : '',
                 'ignore_hosts'          : ['localhost','127.0.0.0/8','*.local'],
-                'background_image'      : '',
-                'background_alpha'      : 0.0
+                # Titlebar
+                'title_hide_sizetext'     : False,
+                'title_transmit_fg_color' : '#ffffff',
+                'title_transmit_bg_color' : '#c80003',
+                'title_receive_fg_color'  : '#ffffff',
+                'title_receive_bg_color'  : '#0076c9',
+                'title_inactive_fg_color' : '#000000',
+                'title_inactive_bg_color' : '#c0bebf',
+                'title_use_system_font'   : True,
+                'title_font'              : 'Sans 9'
             },
         },
         'layouts': {
@@ -305,21 +311,25 @@ class Config(object):
         """Get our profile"""
         return(self.profile)
 
+    def get_profile_by_name(self, profile):
+        """Get the profile with the specified name"""
+        return(self.base.profiles[profile])
+
     def set_profile(self, profile, force=False):
         """Set our profile (which usually means change it)"""
         options = self.options_get()
         if not force and options and options.profile and profile == 'default':
             dbg('overriding default profile to %s' % options.profile)
             profile = options.profile
-        dbg('Config::set_profile: Changing profile to %s' % profile)
+        dbg('Changing profile to %s' % profile)
         self.profile = profile
         if profile not in self.base.profiles:
-            dbg('Config::set_profile: %s does not exist, creating' % profile)
+            dbg('%s does not exist, creating' % profile)
             self.base.profiles[profile] = copy(DEFAULTS['profiles']['default'])
 
-    def add_profile(self, profile):
+    def add_profile(self, profile, toclone):
         """Add a new profile"""
-        return(self.base.add_profile(profile))
+        return(self.base.add_profile(profile, toclone))
 
     def del_profile(self, profile):
         """Delete a profile"""
@@ -498,6 +508,7 @@ class ConfigBase(Borg):
     plugins = None
     layouts = None
     command_line_options = None
+    config_file_updated_to_cell_height = False
 
     def __init__(self):
         """Class initialiser"""
@@ -606,7 +617,7 @@ class ConfigBase(Borg):
     def load(self):
         """Load configuration data from our various sources"""
         if self.loaded is True:
-            dbg('ConfigBase::load: config already loaded')
+            dbg('config already loaded')
             return
 
         if self.command_line_options and self.command_line_options.config:
@@ -617,6 +628,14 @@ class ConfigBase(Borg):
                 filename = os.path.join(get_system_config_dir(), 'config')
         dbg('looking for config file: %s' % filename)
         try:
+            #
+            # Make sure we attempt to update the ‘cell_height’ config
+            # only once when starting a new instance of Terminator.
+            #
+            if not self.config_file_updated_to_cell_height:
+                update_config_to_cell_height(filename)
+                self.config_file_updated_to_cell_height = True
+
             configfile = open(filename, 'r')
         except Exception as ex:
             if not self.whined:
@@ -646,11 +665,11 @@ class ConfigBase(Borg):
             dbg('config validated successfully')
 
         for section_name in self.sections:
-            dbg('ConfigBase::load: Processing section: %s' % section_name)
+            dbg('Processing section: %s' % section_name)
             section = getattr(self, section_name)
             if section_name == 'profiles':
                 for profile in parser[section_name]:
-                    dbg('ConfigBase::load: Processing profile: %s' % profile)
+                    dbg('Processing profile: %s' % profile)
                     if section_name not in section:
                         # FIXME: Should this be outside the loop?
                         section[profile] = copy(DEFAULTS['profiles']['default'])
@@ -659,13 +678,11 @@ class ConfigBase(Borg):
                 if section_name not in parser:
                     continue
                 for part in parser[section_name]:
-                    dbg('ConfigBase::load: Processing %s: %s' % (section_name,
-                                                                 part))
+                    dbg('Processing %s: %s' % (section_name, part))
                     section[part] = parser[section_name][part]
             elif section_name == 'layouts':
                 for layout in parser[section_name]:
-                    dbg('ConfigBase::load: Processing %s: %s' % (section_name,
-                                                                 layout))
+                    dbg('Processing %s: %s' % (section_name, layout))
                     if layout == 'default' and \
                        parser[section_name][layout] == {}:
                            continue
@@ -674,8 +691,7 @@ class ConfigBase(Borg):
                 if section_name not in parser:
                     continue
                 for part in parser[section_name]:
-                    dbg('ConfigBase::load: Processing %s: %s' % (section_name,
-                                                                 part))
+                    dbg('Processing %s: %s' % (section_name, part))
                     if parser[section_name][part] == 'None':
                         section[part] = None
                     else:
@@ -684,8 +700,7 @@ class ConfigBase(Borg):
                 try:
                     section.update(parser[section_name])
                 except KeyError as ex:
-                    dbg('ConfigBase::load: skipping missing section %s' %
-                            section_name)
+                    dbg('skipping missing section %s' % section_name)
 
         self.loaded = True
 
@@ -696,12 +711,12 @@ class ConfigBase(Borg):
 
     def save(self):
         """Save the config to a file"""
-        dbg('ConfigBase::save: saving config')
+        dbg('saving config')
         parser = ConfigObj(encoding='utf-8')
         parser.indent_type = '  '
 
         for section_name in ['global_config', 'keybindings']:
-            dbg('ConfigBase::save: Processing section: %s' % section_name)
+            dbg('Processing section: %s' % section_name)
             section = getattr(self, section_name)
             parser[section_name] = dict_diff(DEFAULTS[section_name], section)
 
@@ -711,7 +726,7 @@ class ConfigBase(Borg):
         for profile in self.profiles:
             if profile == JSON_PROFILE_NAME:
                 continue
-            dbg('ConfigBase::save: Processing profile: %s' % profile)
+            dbg('Processing profile: %s' % profile)
             parser['profiles'][profile] = dict_diff(
                     DEFAULTS['profiles']['default'], self.profiles[profile])
 
@@ -719,12 +734,12 @@ class ConfigBase(Borg):
         for layout in self.layouts:
             if layout == JSON_LAYOUT_NAME:
                 continue
-            dbg('ConfigBase::save: Processing layout: %s' % layout)
+            dbg('Processing layout: %s' % layout)
             parser['layouts'][layout] = self.layouts[layout]
 
         parser['plugins'] = {}
         for plugin in self.plugins:
-            dbg('ConfigBase::save: Processing plugin: %s' % plugin)
+            dbg('Processing plugin: %s' % plugin)
             parser['plugins'][plugin] = self.plugins[plugin]
 
         config_dir = get_config_dir()
@@ -757,17 +772,17 @@ class ConfigBase(Borg):
             profile = 'default'
 
         if key in self.global_config:
-            dbg('ConfigBase::get_item: %s found in globals: %s' %
+            dbg('%s found in globals: %s' %
                     (key, self.global_config[key]))
             return(self.global_config[key])
         elif key in self.profiles[profile]:
-            dbg('ConfigBase::get_item: %s found in profile %s: %s' % (
+            dbg('%s found in profile %s: %s' % (
                     key, profile, self.profiles[profile][key]))
             return(self.profiles[profile][key])
         elif key == 'keybindings':
             return(self.keybindings)
         elif plugin and plugin in self.plugins and key in self.plugins[plugin]:
-            dbg('ConfigBase::get_item: %s found in plugin %s: %s' % (
+            dbg('%s found in plugin %s: %s' % (
                     key, plugin, self.plugins[plugin][key]))
             return(self.plugins[plugin][key])
         elif default:
@@ -777,7 +792,7 @@ class ConfigBase(Borg):
 
     def set_item(self, key, value, profile='default', plugin=None):
         """Set a configuration item"""
-        dbg('ConfigBase::set_item: Setting %s=%s (profile=%s, plugin=%s)' %
+        dbg('Setting %s=%s (profile=%s, plugin=%s)' %
                 (key, value, profile, plugin))
 
         if key in self.global_config:
@@ -809,11 +824,15 @@ class ConfigBase(Borg):
         if plugin in self.plugins:
             del self.plugins[plugin]
 
-    def add_profile(self, profile):
+    def add_profile(self, profile, toclone):
         """Add a new profile"""
         if profile in self.profiles:
             return(False)
-        self.profiles[profile] = copy(DEFAULTS['profiles']['default'])
+        if toclone is not None:
+            newprofile = copy(toclone)
+        else:
+            newprofile = copy(DEFAULTS['profiles']['default'])
+        self.profiles[profile] = newprofile
         return(True)
 
     def add_layout(self, name, layout):
@@ -840,4 +859,3 @@ class ConfigBase(Borg):
     def set_layout(self, layout, tree):
         """Set a layout"""
         self.layouts[layout] = tree
-

@@ -43,6 +43,9 @@ DEBUGCLASSES = []
 # list of methods to show debugging for. empty list means show all methods
 DEBUGMETHODS = []
 
+def is_flatpak():
+    return os.path.exists("/.flatpak-info")
+
 def dbg(log = ""):
     """Print a message if debugging is enabled"""
     if DEBUG:
@@ -105,7 +108,12 @@ def manual_lookup():
             if language in available_languages:
                 target = language
                 break
-
+    elif 'LANG' in os.environ:
+        language = os.environ['LANG'].split('.')[0]
+        for i in range(len(available_languages)):
+            if language == available_languages[i]:
+                target = language
+                break
     return base_url % target
 
 def path_lookup(command):
@@ -139,6 +147,13 @@ def path_lookup(command):
 
 def shell_lookup():
     """Find an appropriate shell for the user"""
+    if is_flatpak():
+        getent = subprocess.check_output([
+            'flatpak-spawn', '--host', 'getent', 'passwd',
+            pwd.getpwuid(os.getuid())[0]
+        ]).decode(encoding='UTF-8').rstrip('\n')
+        shell = getent.split(':')[6]
+        return shell
     try:
         usershell = pwd.getpwuid(os.getuid())[6]
     except KeyError:
@@ -356,3 +371,55 @@ def display_manager():
         return 'WAYLAND'
     # Fallback assumption of X11
     return 'X11'
+
+def update_config_to_cell_height(filename):
+    '''Replace ‘line_height’ with ‘cell_height’ in Terminator
+    config file (usually ~/.config/terminator/config on
+    Unix-like systems).'''
+
+    dbg('update_config_to_cell_height() config filename %s' % filename)
+
+    try:
+        with open(filename, 'r+') as file:
+            config_text = file.read()
+
+            if not 'line_height' in config_text:
+                #
+                # It is either a new config, or it is already using the
+                # new ‘cell_height’ property instead the old ‘line_height’.
+                #
+                dbg('No ‘line_height’ found in ‘%s’.' % filename)
+                file.close()
+                return
+
+            updated_config_text = config_text.replace('line_height', 'cell_height')
+
+            file.seek(0)
+            file.write(updated_config_text)
+            file.truncate()
+            file.close()
+
+            dbg('Updted ‘line_height’ to ‘cell_height’.')
+
+    except Exception as ex:
+        err('Unable to open ‘%s’ for reading and/or writting.\n(%s)'
+                % (filename, ex))
+
+def get_flatpak_args(args, envv, cwd):
+    """Contruct args to be executed via flatpak-spawn"""
+    flatpak_args = None
+    env_args = ['--env={}'.format(env) for env in envv]
+    flatpak_spawn = [
+        "flatpak-spawn", "--host", "--watch-bus", "--forward-fd=1",
+        "--forward-fd=2", "--directory={}".format(cwd)
+    ]
+    # Detect and remove duplicate shell in args
+    # to work around vte.spawn_sync() requirement.
+    if len(set([args[0], args[1]])) == 1:
+        del args[0]
+
+    flatpak_args = flatpak_spawn + env_args + args
+
+    dbg('returned flatpak args:  %s' % flatpak_args)
+
+    return flatpak_args

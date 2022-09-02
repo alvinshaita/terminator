@@ -15,6 +15,7 @@ from .factory import Factory
 from .util import dbg, err, enumerate_descendants
 from .terminal import Terminal
 from .container import Container
+from .configjson import ConfigJson
 from gi.repository import Gtk as gtk
 from gi.repository import GObject as gobject
 
@@ -74,6 +75,15 @@ class DBusService(Borg, dbus.service.Object):
     def new_window_cmdline(self, options=dbus.Dictionary()):
         """Create a new Window"""
         dbg('dbus method called: new_window with parameters %s'%(options))
+        if options['configjson']:
+            dbg(options['configjson'])
+            configjson = ConfigJson()
+            layoutname = configjson.extend_config(options['configjson'])
+            if layoutname and ((not options['layout']) or options['layout'] == 'default'):
+                options['layout'] = layoutname
+                if not options['profile']:
+                    options['profile'] = configjson.get_profile_to_use()
+
         oldopts = self.terminator.config.options_get()
         oldopts.__dict__ = options
         self.terminator.config.options_set(oldopts)
@@ -114,15 +124,34 @@ class DBusService(Borg, dbus.service.Object):
         """Create a new tab"""
         return self.new_terminal(uuid, 'tab')
 
-    @dbus.service.method(BUS_NAME)
-    def hsplit(self, uuid=None):
-        """Split a terminal horizontally, by UUID"""
-        return self.new_terminal(uuid, 'hsplit')
+    @dbus.service.method(BUS_NAME) 
+    def bg_img_all (self,options=dbus.Dictionary()):
+        for terminal in self.terminator.terminals:
+            terminal.set_background_image(options.get('file')) 
+            
+    @dbus.service.method(BUS_NAME) 
+    def bg_img(self,uuid=None,options=dbus.Dictionary()):
+        self.terminator.find_terminal_by_uuid(uuid).set_background_image(options.get('file'))
 
     @dbus.service.method(BUS_NAME)
-    def vsplit(self, uuid=None):
+    def hsplit(self, uuid=None,options=None):
+        """Split a terminal horizontally, by UUID"""
+        if options:
+            cmd = options.get('execute')
+            title = options.get('title')
+            return self.new_terminal_cmd(uuid=uuid, title=title, cmd=cmd, split_vert=True) 
+        else:
+            return self.new_terminal(uuid, 'hsplit')
+
+    @dbus.service.method(BUS_NAME)
+    def vsplit(self, uuid=None,options=None):
         """Split a terminal vertically, by UUID"""
-        return self.new_terminal(uuid, 'vsplit')
+        if options:
+            cmd = options.get('execute')
+            title = options.get('title')
+            return self.new_terminal_cmd(uuid=uuid, title=title, cmd=cmd, split_vert=False) 
+        else:
+            return self.new_terminal(uuid, 'vsplit')
 
     def get_terminal_container(self, terminal, container=None):
         terminator = Terminator()
@@ -137,16 +166,6 @@ class DBusService(Borg, dbus.service.Object):
                 if isinstance(child, Container):
                     owner = self.get_terminal_container(terminal, child)
                     if owner: return owner
-
-    @dbus.service.method(BUS_NAME)
-    def vsplit_cmd(self, uuid=None, title=None, cmd=None):
-        """Split a terminal vertically, by UUID and immediately runs the specified command in the new terminal"""
-        return self.new_terminal_cmd(uuid=uuid, title=title, cmd=cmd, split_vert=False)
-
-    @dbus.service.method(BUS_NAME)
-    def hsplit_cmd(self, uuid=None, title=None, cmd=None):
-        """Split a terminal horizontally, by UUID and immediately runs the specified command in the new terminal"""
-        return self.new_terminal_cmd(uuid=uuid, title=title, cmd=cmd, split_vert=True)
 
     def new_terminal_cmd(self, uuid=None, title=None, cmd=None, split_vert=False):
         """Split a terminal by UUID and immediately runs the specified command in the new terminal"""
@@ -182,7 +201,7 @@ class DBusService(Borg, dbus.service.Object):
             return new_terminal_set[0]
 
     def new_terminal(self, uuid, type):
-        """Split a terminal horizontally or vertically, by UUID"""
+        """Split a terminal horizontally o?r vertically, by UUID"""
         dbg('dbus method called: %s' % type)
         if not uuid:
             return "ERROR: No UUID specified"
@@ -290,6 +309,14 @@ class DBusService(Borg, dbus.service.Object):
         profile_name = options.get('profile')
         terminal.force_set_profile(False, profile_name)
 
+    @dbus.service.method(BUS_NAME)
+    def switch_profile_all(self, options=dbus.Dictionary()):
+        """Switch profile of a given terminal"""
+        for terminal in self.terminator.terminals:
+            profile_name = options.get('profile')
+            terminal.force_set_profile(False, profile_name)
+
+
 def with_proxy(func):
     """Decorator function to connect to the session dbus bus"""
     dbg('dbus client call: %s' % func.__name__)
@@ -333,22 +360,12 @@ def new_tab(session, uuid, options):
 @with_proxy
 def hsplit(session, uuid, options):
     """Call the dbus method to horizontally split a terminal"""
-    print(session.hsplit(uuid))
+    print(session.hsplit(uuid,options))
 
 @with_proxy
 def vsplit(session, uuid, options):
     """Call the dbus method to vertically split a terminal"""
-    print(session.vsplit(uuid))
-
-@with_proxy
-def vsplit_cmd(session, uuid, title, cmd, options):
-    """Call the dbus method to vertically split a terminal and run the specified command in the new terminal"""
-    session.vsplit_cmd(uuid, title, cmd)
-
-@with_proxy
-def hsplit_cmd(session, uuid, title, cmd, options):
-    """Call the dbus method to horizontally split a terminal and run the specified command in the new terminal"""
-    session.hsplit_cmd(uuid, title, cmd)
+    print(session.vsplit(uuid,options))
 
 @with_proxy
 def get_terminals(session, options):
@@ -390,3 +407,15 @@ def switch_profile(session, uuid, options):
     """Call the dbus method to return the title of a tab"""
     session.switch_profile(uuid, options)
 
+@with_proxy
+def switch_profile_all(session,options):
+    """Call the dbus method to return the title of a tab"""
+    session.switch_profile_all(options)
+
+@with_proxy
+def bg_img_all(session,options):
+    session.bg_img_all(options)
+
+@with_proxy
+def bg_img(session,uuid,options):
+    session.bg_img(uuid,options)

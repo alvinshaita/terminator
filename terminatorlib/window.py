@@ -28,6 +28,7 @@ if display_manager() == 'X11':
         gi.require_version('Keybinder', '3.0')
         from gi.repository import Keybinder
         Keybinder.init()
+        Keybinder.set_use_cooked_accelerators(False)
     except (ImportError, ValueError):
         err('Unable to load Keybinder module. This means the \
 hide_window shortcut will be unavailable')
@@ -40,6 +41,7 @@ class Window(Container, Gtk.Window):
     title = None
     isfullscreen = None
     ismaximised = None
+    isDestroyed = False
     hidebound = None
     hidefunc = None
     losefocus_time = 0
@@ -128,11 +130,11 @@ class Window(Container, Gtk.Window):
 
         # Attempt to grab a global hotkey for hiding the window.
         # If we fail, we'll never hide the window, iconifying instead.
-        if self.config['keybindings']['hide_window'] != None:
+        if self.config['keybindings']['hide_window'] not in ('', None):
             if display_manager() == 'X11':
                 try:
                     self.hidebound = Keybinder.bind(
-                        self.config['keybindings']['hide_window'].replace('<Shift>',''),
+                        self.config['keybindings']['hide_window'],
                         self.on_hide_window)
                 except (KeyError, NameError):
                     pass
@@ -210,7 +212,7 @@ class Window(Container, Gtk.Window):
         mapping = self.terminator.keybindings.lookup(event)
 
         if mapping:
-            dbg('Window::on_key_press: looked up %r' % mapping)
+            dbg('looked up %r' % mapping)
             if mapping == 'full_screen':
                 self.set_fullscreen(not self.isfullscreen)
             elif mapping == 'close_window':
@@ -256,12 +258,11 @@ class Window(Container, Gtk.Window):
 
     def tab_new(self, widget=None, debugtab=False, _param1=None, _param2=None):
         """Make a new tab"""
+        if self.is_zoomed():
+            self.unzoom()
+
         cwd = None
         profile = None
-
-        if self.get_property('term_zoomed') == True:
-            err("You can't create a tab while a terminal is maximised/zoomed")
-            return
 
         if widget:
             cwd = widget.get_cwd()
@@ -279,10 +280,10 @@ class Window(Container, Gtk.Window):
         """Handle a window close request"""
         maker = Factory()
         if maker.isinstance(self.get_child(), 'Terminal'):
-            if self.get_property('term_zoomed') == True:
+            if self.is_zoomed():
                 return(self.confirm_close(window, _('window')))
             else:
-                dbg('Window::on_delete_event: Only one child, closing is fine')
+                dbg('Only one child, closing is fine')
                 return(False)
         elif maker.isinstance(self.get_child(), 'Container'):
             return(self.confirm_close(window, _('window')))
@@ -298,34 +299,36 @@ class Window(Container, Gtk.Window):
     def on_destroy_event(self, widget, data=None):
         """Handle window destruction"""
         dbg('destroying self')
-        for terminal in self.get_visible_terminals():
+        for terminal in self.get_terminals():
             terminal.close()
         self.cnxids.remove_all()
         self.terminator.deregister_window(self)
+        self.isDestroyed = True
         self.destroy()
         del(self)
 
     def on_hide_window(self, data=None):
         """Handle a request to hide/show the window"""
 
-        if not self.get_property('visible'):
-            #Don't show if window has just been hidden because of
-            #lost focus
-            if (time.time() - self.losefocus_time < 0.1) and \
-                self.config['hide_on_lose_focus']:
-                return
-            if self.position:
-                self.move(self.position[0], self.position[1])
-            self.show()
-            self.grab_focus()
-            try:
-                t = GdkX11.x11_get_server_time(self.get_window())
-            except (TypeError, AttributeError):
-                t = 0
-            self.get_window().focus(t)
-        else:
-            self.position = self.get_position()
-            self.hidefunc()
+        if not self.isDestroyed:
+            if not self.get_property('visible'):
+                #Don't show if window has just been hidden because of
+                #lost focus
+                if (time.time() - self.losefocus_time < 0.1) and \
+                    self.config['hide_on_lose_focus']:
+                    return
+                if self.position:
+                    self.move(self.position[0], self.position[1])
+                self.show()
+                self.grab_focus()
+                try:
+                    t = GdkX11.x11_get_server_time(self.get_window())
+                except (TypeError, AttributeError):
+                    t = 0
+                self.get_window().focus(t)
+            else:
+                self.position = self.get_position()
+                self.hidefunc()
 
     # pylint: disable-msg=W0613
     def on_window_state_changed(self, window, event):
@@ -334,7 +337,7 @@ class Window(Container, Gtk.Window):
                                  Gdk.WindowState.FULLSCREEN)
         self.ismaximised = bool(event.new_window_state &
                                  Gdk.WindowState.MAXIMIZED)
-        dbg('Window::on_window_state_changed: fullscreen=%s, maximised=%s' \
+        dbg('fullscreen=%s, maximised=%s' \
                 % (self.isfullscreen, self.ismaximised))
 
         return(False)
@@ -413,17 +416,23 @@ class Window(Container, Gtk.Window):
                        'title-change': self.title.set_title,
                        'split-horiz': self.split_horiz,
                        'split-vert': self.split_vert,
+                       'resize-term': self.resizeterm,
                        'unzoom': self.unzoom,
                        'tab-change': self.tab_change,
                        'group-all': self.group_all,
                        'group-all-toggle': self.group_all_toggle,
                        'ungroup-all': self.ungroup_all,
+                       'group-win': self.group_win,
+                       'group-win-toggle': self.group_win_toggle,
+                       'ungroup-win': self.ungroup_win,
                        'group-tab': self.group_tab,
                        'group-tab-toggle': self.group_tab_toggle,
                        'ungroup-tab': self.ungroup_tab,
                        'move-tab': self.move_tab,
                        'tab-new': [self.tab_new, widget],
-                       'navigate': self.navigate_terminal}
+                       'navigate': self.navigate_terminal,
+                       'rotate-cw': [self.rotate, True],
+                       'rotate-ccw': [self.rotate, False]}
 
             for signal in signals:
                 args = []
@@ -459,8 +468,9 @@ class Window(Container, Gtk.Window):
 
     def split_axis(self, widget, vertical=True, cwd=None, sibling=None, widgetfirst=True):
         """Split the window"""
-        if self.get_property('term_zoomed') == True:
-            err("You can't split while a terminal is maximised/zoomed")
+        if self.is_zoomed():
+            self.unzoom()
+            widget.get_parent().split_axis(widget, vertical, cwd, sibling, widgetfirst)
             return
 
         order = None
@@ -501,6 +511,21 @@ class Window(Container, Gtk.Window):
         sibling.grab_focus()
         self.set_pos_by_ratio = False
 
+    def resizeterm(self, widget, keyname):
+        """Handle a keyboard event requesting a terminal resize"""
+        # if not zoomed, then ignore the signal: there is only one terminal
+        if self.is_zoomed():
+            self.unzoom()
+            widget.get_parent().resizeterm(widget, keyname)
+
+    def is_zoomed(self):
+        """Return True if the window has a zoomed terminal, False otherwise"""
+        try:
+            # 'is True' just in case we get something that is not a boolean
+            return self.get_property('term_zoomed') is True
+        except TypeError:
+            err('failed to get "term_zoomed" property')
+        return False
 
     def zoom(self, widget, font_scale=True):
         """Zoom a terminal widget"""
@@ -527,11 +552,11 @@ class Window(Container, Gtk.Window):
 
         widget.grab_focus()
 
-    def unzoom(self, widget):
+    def unzoom(self, widget=None):
         """Restore normal terminal layout"""
-        if not self.get_property('term_zoomed'):
+        if not self.is_zoomed():
             # We're not zoomed anyway
-            dbg('Window::unzoom: not zoomed, no-op')
+            dbg('not zoomed, no-op')
             return
 
         widget = self.zoom_data['widget']
@@ -547,6 +572,11 @@ class Window(Container, Gtk.Window):
 
     def rotate(self, widget, clockwise):
         """Rotate children in this window"""
+        if self.is_zoomed():
+            self.unzoom()
+            while Gtk.events_pending():
+                Gtk.main_iteration_do(False)
+
         self.set_pos_by_ratio = True
         maker = Factory()
         child = self.get_child()
@@ -571,6 +601,9 @@ class Window(Container, Gtk.Window):
 
         self.set_pos_by_ratio = False
 
+    def get_terminals(self):
+        return(util.enumerate_descendants(self)[1])
+ 
     def get_visible_terminals(self):
         """Walk down the widget tree to find all of the visible terminals.
         Mostly using Container::get_visible_terminals()"""
@@ -674,6 +707,9 @@ class Window(Container, Gtk.Window):
 
     def tab_change(self, widget, num=None):
         """Change to a specific tab"""
+        if self.is_zoomed():
+            self.unzoom()
+
         if num is None:
             err('must specify a tab to change to')
 
@@ -730,6 +766,25 @@ class Window(Container, Gtk.Window):
         """Ungroup all terminals"""
         self.set_groups(None, self.terminator.terminals)
 
+    def group_win(self, widget):
+        """Group all terminals in the current window"""
+        # FIXME: Why isn't this being done by Terminator() ?
+        dbg("Group Windows")
+        group = _('Window group %s' % (len(self.terminator.groups) + 1))
+        self.terminator.create_group(group)
+        self.set_groups(group, self.get_terminals())
+
+    def group_win_toggle(self, widget):
+        """Toggle grouping to all windows in the current window"""
+        if widget.group == 'Window':
+            self.ungroup_win(widget)
+        else:
+            self.group_win(widget)
+
+    def ungroup_win(self, widget):
+        """Ungroup all terminals in the current window"""
+        self.set_groups(None, self.get_terminals())
+
     def group_tab(self, widget):
         """Group all terminals in the current tab"""
         maker = Factory()
@@ -767,6 +822,9 @@ class Window(Container, Gtk.Window):
 
     def move_tab(self, widget, direction):
         """Handle a keyboard shortcut for moving tab positions"""
+        if self.is_zoomed():
+            self.unzoom()
+
         maker = Factory()
         notebook = self.get_child()
 
@@ -797,6 +855,11 @@ class Window(Container, Gtk.Window):
 
     def navigate_terminal(self, terminal, direction):
         """Navigate around terminals"""
+        if self.is_zoomed():
+            self.unzoom()
+            while Gtk.events_pending():
+                Gtk.main_iteration_do(False)
+
         _containers, terminals = util.enumerate_descendants(self)
         visibles = self.get_visible_terminals()
         current = terminals.index(terminal)
@@ -852,9 +915,8 @@ class Window(Container, Gtk.Window):
 
             if len(winners) > 1:
                 # Break an n-way tie using the cursor position
-                term_alloc = terminal.get_allocation()
-                cursor_x = term_alloc.x + term_alloc.width / 2
-                cursor_y = term_alloc.y + term_alloc.height / 2
+                cursor_x = allocation.x + allocation.width / 2
+                cursor_y = allocation.y + allocation.height / 2
 
                 for term in winners:
                     rect = layout[term]

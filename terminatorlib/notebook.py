@@ -37,7 +37,10 @@ class Notebook(Container, Gtk.Notebook):
         self.register_signals(Notebook)
         self.connect('switch-page', self.deferred_on_tab_switch)
         self.connect('scroll-event', self.on_scroll_event)
+        self.connect('create-window', self.create_window_detach)
         self.configure()
+
+        self.set_can_focus(False)
 
         child = window.get_child()
         window.remove(child)
@@ -75,11 +78,28 @@ class Notebook(Container, Gtk.Notebook):
 #        self.modify_style(style)
         self.last_active_term = {}
 
+    def create_window_detach(self, notebook, widget, x, y):
+        """Create a window to contain a detached tab"""
+        dbg('creating window for detached tab: %s' % widget)
+        maker = Factory()
+
+        window = maker.make('Window')
+        window.move(x, y)
+        size = self.window.get_size()
+        window.resize(size.width, size.height)
+
+        self.detach_tab(widget)
+        self.disconnect_child(widget)
+        self.hoover()
+        window.add(widget)
+
+        window.show_all()
+
     def create_layout(self, layout):
         """Apply layout configuration"""
         def child_compare(a, b):
-            order_a = children[a]['order']
-            order_b = children[b]['order']
+            order_a = int(children[a]['order'])
+            order_b = int(children[b]['order'])
 
             if (order_a == order_b):
                 return 0
@@ -171,6 +191,7 @@ class Notebook(Container, Gtk.Notebook):
             sibling.force_set_profile(None, widget.get_profile())
 
         self.insert_page(container, None, page_num)
+        self.set_tab_detachable(container, True)
         self.child_set_property(container, 'tab-expand', True)
         self.child_set_property(container, 'tab-fill', True)
         self.set_tab_reorderable(container, True)
@@ -257,11 +278,13 @@ class Notebook(Container, Gtk.Notebook):
                    'split-horiz': self.split_horiz,
                    'split-vert': self.split_vert,
                    'title-change': self.propagate_title_change,
-                   'unzoom': self.unzoom,
                    'tab-change': top_window.tab_change,
                    'group-all': top_window.group_all,
                    'group-all-toggle': top_window.group_all_toggle,
                    'ungroup-all': top_window.ungroup_all,
+                   'group-win': top_window.group_win,
+                   'group-win-toggle': top_window.group_win_toggle,
+                   'ungroup-win': top_window.ungroup_win,
                    'group-tab': top_window.group_tab,
                    'group-tab-toggle': top_window.group_tab_toggle,
                    'ungroup-tab': top_window.ungroup_tab,
@@ -294,6 +317,7 @@ class Notebook(Container, Gtk.Notebook):
 
         dbg('inserting page at position: %s' % tabpos)
         self.insert_page(widget, None, tabpos)
+        self.set_tab_detachable(widget, True)
 
         if maker.isinstance(widget, 'Terminal'):
             containers, objects = ([], [widget])
@@ -318,12 +342,12 @@ class Notebook(Container, Gtk.Notebook):
 
     def wrapcloseterm(self, widget):
         """A child terminal has closed"""
-        dbg('Notebook::wrapcloseterm: called on %s' % widget)
+        dbg('called on %s' % widget)
         if self.closeterm(widget):
-            dbg('Notebook::wrapcloseterm: closeterm succeeded')
+            dbg('closeterm succeeded')
             self.hoover()
         else:
-            dbg('Notebook::wrapcloseterm: closeterm failed')
+            dbg('closeterm failed')
 
     def closetab(self, widget, label):
         """Close a tab"""
@@ -347,7 +371,7 @@ class Notebook(Container, Gtk.Notebook):
         child = nb.get_nth_page(tabnum)
 
         if maker.isinstance(child, 'Terminal'):
-            dbg('Notebook::closetab: child is a single Terminal')
+            dbg('child is a single Terminal')
             del nb.last_active_term[child]
             child.close()
             # FIXME: We only do this del and return here to avoid removing the
@@ -355,7 +379,7 @@ class Notebook(Container, Gtk.Notebook):
             del(label)
             return
         elif maker.isinstance(child, 'Container'):
-            dbg('Notebook::closetab: child is a Container')
+            dbg('child is a Container')
             result = self.construct_confirm_close(self.window, _('tab'))
 
             if result == Gtk.ResponseType.ACCEPT:
@@ -370,7 +394,7 @@ class Notebook(Container, Gtk.Notebook):
                         Gtk.main_iteration()
                 return
             else:
-                dbg('Notebook::closetab: user cancelled request')
+                dbg('user cancelled request')
                 return
         else:
             err('Notebook::closetab: child is unknown type %s' % child)
@@ -568,6 +592,8 @@ class TabLabel(Gtk.HBox):
         self.terminator = Terminator()
         self.config = Config()
 
+        self.connect("button-press-event", self.on_button_pressed)
+
         self.label = EditableLabel(title)
         self.update_angle()
 
@@ -649,5 +675,9 @@ class TabLabel(Gtk.HBox):
     def on_close(self, _widget):
         """The close button has been clicked. Destroy the tab"""
         self.emit('close-clicked', self)
+
+    def on_button_pressed(self, _widget, event):
+        if event.button == 2:
+            self.on_close(_widget)
 
 # vim: set expandtab ts=4 sw=4:

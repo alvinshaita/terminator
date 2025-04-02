@@ -39,6 +39,9 @@ def parse_options():
 
     parser = argparse.ArgumentParser()
 
+    parser.add_argument('-R', '--reload', action='store_true', dest='reload',
+                        help=_('Reload terminator configuration'))
+
     parser.add_argument('-v', '--version', action='store_true', dest='version',
             help=_('Display program version'))
     parser.add_argument('-m', '--maximise', action='store_true', dest='maximise',
@@ -62,14 +65,16 @@ def parse_options():
     else:
         parser.add_argument('--command', dest='command',
                 help=_('Specify a command to execute inside the terminal'))
-        parser.add_argument('-e', '--execute2', dest='execute', action=ExecuteCallback,
+        parser.add_argument('-e', '--execute2', dest='execute',
+                nargs=argparse.REMAINDER, action=ExecuteCallback,
                 help=_('Use the rest of the command line as a command to '
                        'execute inside the terminal, and its arguments'))
     parser.add_argument('-g', '--config', dest='config',
                       help=_('Specify a config file'))
     parser.add_argument('-j', '--config-json', dest='configjson',
                       help=_('Specify a partial config json file'))
-    parser.add_argument('-x', '--execute', dest='execute', action=ExecuteCallback,
+    parser.add_argument('-x', '--execute', dest='execute',
+            nargs=argparse.REMAINDER, action=ExecuteCallback,
             help=_('Use the rest of the command line as a command to execute '
                    'inside the terminal, and its arguments'))
     parser.add_argument('--working-directory', metavar='DIR',
@@ -94,6 +99,8 @@ icon for the window (by file or name)'))
             help=_('Comma separated list of methods to limit debugging to'))
     parser.add_argument('--new-tab', action='store_true', dest='new_tab',
             help=_('If Terminator is already running, just open a new tab'))
+    parser.add_argument('--toggle-visibility', action='store_true', dest='toggle_visibility',
+            help=_('If Terminator is already running, toggle windows visibility'))
     parser.add_argument('--unhide', action='store_true', dest='unhide',
             help=_('If Terminator is already running, just unhide all hidden windows'))
     parser.add_argument('--list-profiles', action='store_true', dest='list_profiles',

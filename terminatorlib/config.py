@@ -84,7 +84,7 @@ DEFAULTS = {
         'global_config':   {
             'dbus'                  : True,
             'focus'                 : 'click',
-            'handle_size'           : 1,
+            'handle_size'           : -1,
             'geometry_hinting'      : False,
             'window_state'          : 'normal',
             'borderless'            : False,
@@ -92,7 +92,6 @@ DEFAULTS = {
             'tab_position'          : 'top',
             'broadcast_default'     : 'group',
             'close_button_on_tab'   : True,
-            'hide_tabbar'           : False,
             'scroll_tabbar'         : False,
             'homogeneous_tabbar'    : True,
             'hide_from_taskbar'     : False,
@@ -101,12 +100,12 @@ DEFAULTS = {
             'sticky'                : False,
             'use_custom_url_handler': False,
             'custom_url_handler'    : '',
-            'disable_real_transparency' : False,
             'inactive_color_offset': 0.8,
+            'inactive_bg_color_offset': 1.0,
             'enabled_plugins'       : ['LaunchpadBugURLHandler',
                                        'LaunchpadCodeURLHandler',
                                        'APTURLHandler'],
-            'suppress_multiple_term_dialog': False,
+            'ask_before_closing'    : 'multiple_terminals',
             'always_split_with_profile': False,
             'putty_paste_style'     : False,
             'putty_paste_style_source_clipboard': False,
@@ -118,7 +117,10 @@ DEFAULTS = {
             'case_sensitive'        : True,
             'invert_search'         : False,
             'link_single_click'     : False,
-            'title_at_bottom'       : False
+            'title_at_bottom'       : False,
+            'detachable_tabs'       : True,
+
+            'new_tab_after_current_tab': False,
         },
         'keybindings': {
             'zoom_in'          : '<Control>plus',
@@ -138,6 +140,7 @@ DEFAULTS = {
             'go_right'         : '<Alt>Right',
             'rotate_cw'        : '<Super>r',
             'rotate_ccw'       : '<Super><Shift>r',
+            'split_auto'      :  '<Shift><Control>a',
             'split_horiz'      : '<Shift><Control>o',
             'split_vert'       : '<Shift><Control>e',
             'close_term'       : '<Shift><Control>w',
@@ -201,6 +204,7 @@ DEFAULTS = {
             'next_profile'     : '',
             'previous_profile' : '', 
             'preferences'      : '',
+            'preferences_keybindings' : '<Control><Shift>k',
             'help'             : 'F1'
         },
         'profiles': {
@@ -214,9 +218,11 @@ DEFAULTS = {
                 'background_darkness'   : 0.5,
                 'background_type'       : 'solid',
                 'background_image'      : '',
+                'background_image_mode' : 'stretch_and_fill',
+                'background_image_align_horiz': 'center',
+                'background_image_align_vert' : 'middle',
                 'backspace_binding'     : 'ascii-del',
                 'delete_binding'        : 'escape-sequence',
-                'color_scheme'          : 'grey_on_black',
                 'cursor_blink'          : True,
                 'cursor_shape'          : 'block',
                 'cursor_fg_color'       : '',
@@ -228,7 +234,6 @@ DEFAULTS = {
                 'foreground_color'      : '#aaaaaa',
                 'show_titlebar'         : True,
                 'scrollbar_position'    : "right",
-                'scroll_background'     : True,
                 'scroll_on_keystroke'   : True,
                 'scroll_on_output'      : False,
                 'scrollback_lines'      : 500,
@@ -248,14 +253,11 @@ DEFAULTS = {
                 'bold_is_bright'        : False,
                 'cell_height'           : 1.0,
                 'cell_width'            : 1.0,
-                'focus_on_close'        : 'auto',
                 'force_no_bell'         : False,
-                'cycle_term_tab'        : True,
                 'copy_on_selection'     : False,
                 'split_to_group'        : False,
                 'autoclean_groups'      : True,
                 'http_proxy'            : '',
-                'ignore_hosts'          : ['localhost','127.0.0.0/8','*.local'],
                 # Titlebar
                 'title_hide_sizetext'     : False,
                 'title_transmit_fg_color' : '#ffffff',
@@ -497,6 +499,34 @@ class Config(object):
         """Set a layout"""
         return(self.base.set_layout(layout, tree))
 
+    def copy_layout_item(self, src_layout, dst_layout, item):
+        items = {}
+        for child in src_layout:
+            section   = src_layout[child]
+            sec_type  = section.get('type', None)
+            if sec_type != 'Terminal':
+                continue
+
+            cp_item = section.get(item, None)
+            uuid    = str(section.get('uuid', None))
+            if cp_item:
+                items[uuid] = cp_item
+
+        dbg("items to be copied:%s" % items)
+        for child in dst_layout:
+            section   = dst_layout[child]
+            sec_type  = section.get('type', None)
+            if sec_type != 'Terminal':
+                continue
+
+            uuid       = str(section.get('uuid', None))
+            update_item = items.get(uuid, None)
+            if uuid and update_item:
+               dbg("update layout item:(%s) with value:(%s)"
+                                            % (item, update_item))
+               section[item] = update_item
+
+
 class ConfigBase(Borg):
     """Class to provide access to our user configuration"""
     loaded = None
@@ -620,12 +650,7 @@ class ConfigBase(Borg):
             dbg('config already loaded')
             return
 
-        if self.command_line_options and self.command_line_options.config:
-            filename = self.command_line_options.config
-        else:
-            filename = os.path.join(get_config_dir(), 'config')
-            if not os.path.exists(filename):
-                filename = os.path.join(get_system_config_dir(), 'config')
+        filename = self.get_config_filename()
         dbg('looking for config file: %s' % filename)
         try:
             #
@@ -704,6 +729,68 @@ class ConfigBase(Borg):
 
         self.loaded = True
 
+    def get_config_filename(self):
+        filename = ''
+        if self.command_line_options and self.command_line_options.config:
+            filename = self.command_line_options.config
+        else:
+            filename = os.path.join(get_config_dir(), 'config')
+            if not os.path.exists(filename):
+                filename = os.path.join(get_system_config_dir(), 'config')
+
+        return filename
+
+    def save_config_with_suffix(self, suffix):
+        try:
+            filename = self.get_config_filename()
+
+            #save the current config, to revert any changes make in preferences
+            #save the current config to config_dir path which is at least writable
+            cfg_filename    = os.path.join(get_config_dir(), 'config')
+            cur_loaded_file = cfg_filename + suffix
+
+            if os.path.exists(filename) and cur_loaded_file:
+                dbg('copy file:%s to' \
+                    ' file:%s' % (filename, cur_loaded_file))
+                shutil.copy2(filename, cur_loaded_file)
+            elif cur_loaded_file:
+                open(cur_loaded_file, 'a').close()
+            else:
+                err('ConfigBase:: Unable to get filename to save')
+        except Exception as ex:
+            err('ConfigBase::save_config_with_suffix' \
+                    ' Unable to save config: %s' % ex)
+
+    def restore_config_with_suffix(self, suffix):
+        try:
+            filename = self.get_config_filename()
+
+            cfg_filename    = os.path.join(get_config_dir(), 'config')
+            cur_loaded_file = cfg_filename + suffix
+            if os.path.exists(cur_loaded_file):
+                if not os.access(filename, os.W_OK):
+                    dbg('path:%s not writable' \
+                        ' restoring to path:%s' % (filename,cfg_filename))
+                    filename = cfg_filename
+
+                dbg('restore from file:%s to file:%s'
+                        % (cur_loaded_file, filename))
+                shutil.copy2(cur_loaded_file, filename)
+        except Exception as ex:
+            err('ConfigBase::restore_config_with_suffix' \
+                    ' Unable to restore config: %s' % ex)
+
+    def remove_config_with_suffix(self, suffix):
+        try:
+            cfg_filename    = os.path.join(get_config_dir(), 'config')
+            cur_loaded_file = cfg_filename + suffix
+            if os.path.exists(cur_loaded_file):
+                dbg('remove file:%s' % (cur_loaded_file))
+                os.remove(cur_loaded_file)
+        except Exception as ex:
+            err('ConfigBase::remove_config_with_suffix' \
+                    ' Unable to remove config: %s' % ex)
+
     def reload(self):
         """Force a reload of the base config"""
         self.loaded = False
@@ -718,7 +805,20 @@ class ConfigBase(Borg):
         for section_name in ['global_config', 'keybindings']:
             dbg('Processing section: %s' % section_name)
             section = getattr(self, section_name)
-            parser[section_name] = dict_diff(DEFAULTS[section_name], section)
+            if section_name == 'keybindings':
+                from terminatorlib.plugin import KeyBindUtil
+                # for plugin KeyBindUtil assist in plugin_util
+                keybindutil = KeyBindUtil();
+                keyb_keys   = keybindutil.get_all_act_to_keys()
+                # we only need keys as a reference so to match them
+                # against new values
+                keyb_keys   = dict.fromkeys(keyb_keys, "")
+
+                default_merged_section = {**keyb_keys, **DEFAULTS[section_name]}
+                merged_section = {**keyb_keys, **section}
+                parser[section_name] = dict_diff(default_merged_section, merged_section)
+            else:
+                parser[section_name] = dict_diff(DEFAULTS[section_name], section)
 
         from .configjson import JSON_PROFILE_NAME, JSON_LAYOUT_NAME
 
@@ -756,7 +856,8 @@ class ConfigBase(Borg):
                 open(filename, 'a').close()
 
             backup_file = filename + '~'
-            shutil.copy2(filename, backup_file)
+            if os.path.exists(filename):
+                shutil.copy2(filename, backup_file)
 
             with open(filename, 'wb') as fh:
                 parser.write(fh)

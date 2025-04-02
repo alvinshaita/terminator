@@ -43,6 +43,10 @@ class Searchbar(Gtk.HBox):
 
         self.config = Config()
 
+        if not self.config.base.get_item('case_sensitive'):
+            self.regex_flags_pcre2 |= regex.PCRE2_CASELESS
+            self.regex_flags_glib |= regex.GLIB_CASELESS
+
         self.get_style_context().add_class("terminator-terminal-searchbar")
 
         # Search text
@@ -55,6 +59,8 @@ class Searchbar(Gtk.HBox):
         # Label
         label = Gtk.Label(label=_('Search:'))
         label.show()
+        label.set_margin_start(10)
+        label.set_margin_end(5)
 
         # Close Button
         close = Gtk.Button()
@@ -148,7 +154,7 @@ class Searchbar(Gtk.HBox):
         
         self.config.base.set_item('case_sensitive', toggled_state)
         self.config.save()
-        self.do_search(self.entry) #  Start a new search everytime the check box is toggled.    
+        self.do_search(self.entry) #  Start a new search every time the check box is toggled.    
 
     def get_vte(self):
         """Find our parent widget"""
@@ -164,9 +170,13 @@ class Searchbar(Gtk.HBox):
         key = Gdk.keyval_name(event.keyval)
         if key == 'Escape':
             self.end_search()
-        else:
-            self.prev.set_sensitive(False)
-            self.next.set_sensitive(False)
+        elif (event.state & Gdk.ModifierType.SHIFT_MASK)\
+                and (event.keyval == Gdk.KEY_Return or event.keyval == Gdk.KEY_KP_Enter):
+            if self.search_is_inverted:
+                self.next_search(None)
+            else:
+                self.prev_search(None)
+            return True
 
     def start_search(self):
         """Show ourselves"""

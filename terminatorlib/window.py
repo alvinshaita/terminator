@@ -103,6 +103,7 @@ class Window(Container, Gtk.Window):
 
         self.apply_icon(icon_to_apply)
         self.pending_set_rough_geometry_hint = False
+        self.hidefunc = self.hide
 
     def do_get_property(self, prop):
         """Handle gobject getting a property"""
@@ -279,27 +280,28 @@ class Window(Container, Gtk.Window):
     def on_delete_event(self, window, event, data=None):
         """Handle a window close request"""
         maker = Factory()
-        if maker.isinstance(self.get_child(), 'Terminal'):
-            if self.is_zoomed():
-                return(self.confirm_close(window, _('window')))
-            else:
-                dbg('Only one child, closing is fine')
-                return(False)
-        elif maker.isinstance(self.get_child(), 'Container'):
-            return(self.confirm_close(window, _('window')))
-        else:
-            dbg('unknown child: %s' % self.get_child())
 
-    def confirm_close(self, window, type):
-        """Display a confirmation dialog when the user is closing multiple
-        terminals in one window"""
-        
-        return(not (self.construct_confirm_close(window, type) == Gtk.ResponseType.ACCEPT))
+        child = self.get_child()
+        if (maker.isinstance(child, 'Terminal') or
+            maker.isinstance(child, 'Container')):
+            confirm_close = self.construct_confirm_close(window, child)
+            return (confirm_close != Gtk.ResponseType.ACCEPT)
+        else:
+            dbg('unknown child: %s' % child)
+            return False # close anyway
 
     def on_destroy_event(self, widget, data=None):
         """Handle window destruction"""
         dbg('destroying self')
         for terminal in self.get_terminals():
+            # Only for race condition, while closing a window with a single
+            # terminal. Could be useful in other scenarios.
+            # We can't get [[terminal1]] section using
+            # terminal.describe_layout() while terminal is closing.
+            # Also while receiving event on Plugins Side, if connected to term
+            # we can't use close-term as it starts to close terminal, so we
+            # send a pre-close-term before Example: Plugin SaveLastSessionLayout
+            terminal.emit('pre-close-term')
             terminal.close()
         self.cnxids.remove_all()
         self.terminator.deregister_window(self)
@@ -414,6 +416,7 @@ class Window(Container, Gtk.Window):
         if maker.isinstance(widget, 'Terminal'):
             signals = {'close-term': self.closeterm,
                        'title-change': self.title.set_title,
+                       'split-auto': self.split_auto,
                        'split-horiz': self.split_horiz,
                        'split-vert': self.split_vert,
                        'resize-term': self.resizeterm,
@@ -529,6 +532,7 @@ class Window(Container, Gtk.Window):
 
     def zoom(self, widget, font_scale=True):
         """Zoom a terminal widget"""
+        maker = Factory()
         children = self.get_children()
 
         if widget in children:
@@ -541,8 +545,13 @@ class Window(Container, Gtk.Window):
         self.zoom_data['old_child'] = children[0]
         self.zoom_data['font_scale'] = font_scale
 
+        old_parent = self.zoom_data['old_parent']
+        if maker.isinstance(old_parent, 'Notebook'):
+            self.zoom_data['notebook_tabnum'] = old_parent.page_num(widget)
+            self.zoom_data['notebook_label'] = old_parent.get_tab_label(widget).get_label()
+
         self.remove(self.zoom_data['old_child'])
-        self.zoom_data['old_parent'].remove(widget)
+        old_parent.remove(widget)
         self.add(widget)
         self.set_property('term_zoomed', True)
 
@@ -554,6 +563,8 @@ class Window(Container, Gtk.Window):
 
     def unzoom(self, widget=None):
         """Restore normal terminal layout"""
+        maker = Factory()
+
         if not self.is_zoomed():
             # We're not zoomed anyway
             dbg('not zoomed, no-op')
@@ -565,7 +576,13 @@ class Window(Container, Gtk.Window):
 
         self.remove(widget)
         self.add(self.zoom_data['old_child'])
-        self.zoom_data['old_parent'].add(widget)
+        if maker.isinstance(self.zoom_data['old_parent'], 'Notebook'):
+            self.zoom_data['old_parent'].newtab(widget=widget, metadata={
+                'tabnum': self.zoom_data['notebook_tabnum'],
+                'label':  self.zoom_data['notebook_label']
+            })
+        else:
+            self.zoom_data['old_parent'].add(widget)
         widget.grab_focus()
         self.zoom_data = None
         self.set_property('term_zoomed', False)
@@ -583,8 +600,17 @@ class Window(Container, Gtk.Window):
 
         # If our child is a Notebook, reset to work from its visible child
         if maker.isinstance(child, 'Notebook'):
-            pagenum = child.get_current_page()
-            child = child.get_nth_page(pagenum)
+            notebook = child
+
+            pagenum = notebook.get_current_page()
+            child = notebook.get_nth_page(pagenum)
+
+            metadata = {
+                'tabnum': pagenum,
+                'label': notebook.get_tab_label(child).get_label()
+            }
+        else:
+            metadata = None
 
         if maker.isinstance(child, 'Paned'):
             parent = child.get_parent()
@@ -592,7 +618,7 @@ class Window(Container, Gtk.Window):
             # otherwise _sometimes_ we get incorrect values.
             alloc = child.get_allocation()
             parent.remove(child)
-            child.rotate_recursive(parent, alloc.width, alloc.height, clockwise)
+            child.rotate_recursive(parent, alloc.width, alloc.height, clockwise, metadata)
 
             self.show_all()
             while Gtk.events_pending():
@@ -742,7 +768,7 @@ class Window(Container, Gtk.Window):
         # change
         child.set_current_page(child.get_current_page())
 
-    def set_groups(self, new_group,  term_list):
+    def set_groups(self, new_group, term_list):
         """Set terminals in term_list to new_group"""
         for terminal in term_list:
             terminal.set_group(None, new_group)
@@ -776,7 +802,7 @@ class Window(Container, Gtk.Window):
 
     def group_win_toggle(self, widget):
         """Toggle grouping to all windows in the current window"""
-        if widget.group == 'Window':
+        if widget.group:
             self.ungroup_win(widget)
         else:
             self.group_win(widget)
@@ -888,9 +914,9 @@ class Window(Container, Gtk.Window):
             allocation = terminal.get_allocation()
             possibles = []
 
-            # Get the co-ordinate of the appropriate edge for this direction
+            # Get the coordinate of the appropriate edge for this direction
             edge, p1, p2 = util.get_edge(allocation, direction)
-            # Find all visible terminals which are, in their entirity, in the
+            # Find all visible terminals which are, in their entirety, in the
             # direction we want to move, and are at least partially spanning
             # p1 to p2
             for term in layout:

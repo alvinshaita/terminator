@@ -6,7 +6,7 @@ terminals """
 
 import os
 import sys
-from gi.repository import Gtk
+from gi.repository import Gtk,Vte
 import terminatorlib.plugin as plugin
 from terminatorlib.translation import _
 
@@ -19,6 +19,7 @@ class Logger(plugin.MenuItem):
     dialog_action = Gtk.FileChooserAction.SAVE
     dialog_buttons = (_("_Cancel"), Gtk.ResponseType.CANCEL,
                       _("_Save"), Gtk.ResponseType.OK)
+    vte_version = Vte.get_minor_version()
 
     def __init__(self):
         plugin.MenuItem.__init__(self)
@@ -40,8 +41,11 @@ class Logger(plugin.MenuItem):
         
     def write_content(self, terminal, row_start, col_start, row_end, col_end):
         """ Final function to write a file """
-        content = terminal.get_text_range(row_start, col_start, row_end, col_end,
+        if self.vte_version < 72:
+            content = terminal.get_text_range(row_start, col_start, row_end, col_end,
                                           lambda *a: True)
+        else:
+            content = terminal.get_text_range_format(Vte.Format.TEXT,row_start, col_start, row_end, col_end)
         content = content[0]
         fd = self.loggers[terminal]["fd"]
         # Don't write the last char which is always '\n'
@@ -101,7 +105,7 @@ class Logger(plugin.MenuItem):
         last_saved_row = self.loggers[vte_terminal]["row"]
         (col, row) = vte_terminal.get_cursor_position()
         if last_saved_col != col or last_saved_row != row:
-            # Save unwritten bufer to the file
+            # Save unwritten buffer to the file
             self.write_content(vte_terminal, last_saved_row, last_saved_col, row, col)
         fd = self.loggers[vte_terminal]["fd"]
         fd.close()

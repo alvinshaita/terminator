@@ -101,6 +101,12 @@ class DBusService(Borg, dbus.service.Object):
         window.tab_new()
 
     @dbus.service.method(BUS_NAME, in_signature='a{ss}')
+    def toggle_visibility_cmdline(self,options=dbus.Dictionary):
+        dbg('toggle_visibility_cmdline')
+        for window in self.terminator.get_windows():
+            window.on_hide_window()
+
+    @dbus.service.method(BUS_NAME, in_signature='a{ss}')
     def unhide_cmdline(self,options=dbus.Dictionary):
         dbg('unhide_cmdline')
         for window in self.terminator.get_windows():
@@ -123,6 +129,12 @@ class DBusService(Borg, dbus.service.Object):
     def new_tab(self, uuid=None):
         """Create a new tab"""
         return self.new_terminal(uuid, 'tab')
+
+    @dbus.service.method(BUS_NAME)
+    def reload_configuration(self):
+        """Reload configuration for all terminals"""
+        self.terminator.config.base.reload()
+        self.terminator.reconfigure()
 
     @dbus.service.method(BUS_NAME) 
     def bg_img_all (self,options=dbus.Dictionary()):
@@ -342,6 +354,15 @@ def new_window_cmdline(session, options):
 def new_tab_cmdline(session, options):
     """Call the dbus method to open a new tab in the first window"""
     session.new_tab_cmdline(options)
+
+@with_proxy
+def toggle_visibility_cmdline(session,options):
+    session.toggle_visibility_cmdline(options)
+
+@with_proxy
+def reload_configuration(session):
+    """Call the dbus method to reload configuration for all windows"""
+    session.reload_configuration()
 
 @with_proxy
 def unhide_cmdline(session,options):

@@ -15,7 +15,7 @@ try:
 except ImportError:
     from urllib import unquote as urlunquote
 
-from .util import dbg, err, spawn_new_terminator, make_uuid, manual_lookup, display_manager
+from .util import dbg, err, spawn_new_terminator, make_uuid, manual_lookup
 from . import util
 from .config import Config
 from .cwd import get_pid_cwd
@@ -36,15 +36,19 @@ class Terminal(Gtk.VBox):
     """Class implementing the VTE widget and its wrappings"""
 
     __gsignals__ = {
+        'pre-close-term': (GObject.SignalFlags.RUN_LAST, None, ()),
         'close-term': (GObject.SignalFlags.RUN_LAST, None, ()),
         'title-change': (GObject.SignalFlags.RUN_LAST, None,
             (GObject.TYPE_STRING,)),
+        'insert-term-name': (GObject.SignalFlags.RUN_LAST, None, ()),
         'enumerate': (GObject.SignalFlags.RUN_LAST, None,
             (GObject.TYPE_INT,)),
         'group-tab': (GObject.SignalFlags.RUN_LAST, None, ()),
         'group-tab-toggle': (GObject.SignalFlags.RUN_LAST, None, ()),
         'ungroup-tab': (GObject.SignalFlags.RUN_LAST, None, ()),
         'ungroup-all': (GObject.SignalFlags.RUN_LAST, None, ()),
+        'split-auto': (GObject.SignalFlags.RUN_LAST, None,
+            (GObject.TYPE_STRING,)),
         'split-horiz': (GObject.SignalFlags.RUN_LAST, None,
             (GObject.TYPE_STRING,)),
         'split-vert': (GObject.SignalFlags.RUN_LAST, None,
@@ -108,6 +112,7 @@ class Terminal(Gtk.VBox):
     fgcolor_active = None
     fgcolor_inactive = None
     bgcolor = None
+    bgcolor_inactive = None
     palette_active = None
     palette_inactive = None
 
@@ -125,6 +130,7 @@ class Terminal(Gtk.VBox):
 
         # FIXME: Surely these should happen in Terminator::register_terminal()?
         self.connect('enumerate', self.terminator.do_enumerate)
+        self.connect('insert-term-name', self.terminator.do_insert_term_name)
         self.connect('focus-in', self.terminator.focus_changed)
         self.connect('focus-out', self.terminator.focus_left)
 
@@ -149,7 +155,17 @@ class Terminal(Gtk.VBox):
             self.composite_support = True
         dbg('composite_support: %s' % self.composite_support)
 
+        if hasattr(self.vte, "set_enable_sixel"):
+            self.vte.set_enable_sixel(True)
+
         self.vte.show()
+
+        #force to load for new window/terminal use case loading plugin
+        #and connecting signals, note the line update_url_matches also
+        #calls load_plugins, but it won't reload since already loaded
+
+        self.load_plugins(force = True)
+
         self.update_url_matches()
 
         self.terminalbox = self.create_terminalbox()
@@ -240,12 +256,14 @@ class Terminal(Gtk.VBox):
         """Return our cwd"""
         vte_cwd = self.vte.get_current_directory_uri()
         if vte_cwd:
-            # OSC7 pwd gives an answer
-            return(GLib.filename_from_uri(vte_cwd)[0])
-        else:
-            # Fall back to old gtk2 method
-            dbg('calling get_pid_cwd')
-            return(get_pid_cwd(self.pid))
+            # OSC7 pwd almost always gives an answer
+            try:
+                return(GLib.filename_from_uri(vte_cwd)[0])
+            except:
+                pass
+        # Fall back to old gtk2 method
+        dbg('calling get_pid_cwd')
+        return(get_pid_cwd(self.pid))
 
     def close(self):
         """Close ourselves"""
@@ -279,7 +297,12 @@ class Terminal(Gtk.VBox):
 
         return(terminalbox)
 
+    def load_plugins(self, force = False):
+        registry = plugin.PluginRegistry()
+        registry.load_plugins(force)
+
     def _add_regex(self, name, re):
+        dbg(f"adding regex: {re}")
         match = -1
         if regex.FLAGS_PCRE2:
             try:
@@ -301,21 +324,25 @@ class Terminal(Gtk.VBox):
         """Update the regexps used to match URLs"""
         userchars = "-A-Za-z0-9"
         passchars = "-A-Za-z0-9,?;.:/!%$^*&~\"#'"
-        hostchars = "-A-Za-z0-9:\[\]"
+        hostchars = r"-A-Za-z0-9:\[\]"
         pathchars = "-A-Za-z0-9_$.+!*(),;:@&=?/~#%'"
-        schemes   = "(news:|telnet:|nntp:|file:/|https?:|ftps?:|webcal:|ssh:)"
+        schemes   = "(news:|telnet:|nntp:|https?:|ftps?:|webcal:|ssh:)"
         user      = "[" + userchars + "]+(:[" + passchars + "]+)?"
         urlpath   = "/[" + pathchars + "]*[^]'.}>) \t\r\n,\\\"]"
 
         lboundry = "\\b"
         rboundry = "\\b"
 
+        re = (lboundry + "file:/" + "//?(:[0-9]+)?(" + urlpath + ")" +
+                rboundry + "/?")
+        self._add_regex('file', re)
+
         re = (lboundry + schemes +
                 "//(" + user + "@)?[" + hostchars  +".]+(:[0-9]+)?(" +
                 urlpath + ")?" + rboundry + "/?")
         self._add_regex('full_uri', re)
 
-        if self.matches['full_uri'] == -1:
+        if self.matches['full_uri'] == -1 or self.matches['file'] == -1:
             err ('Terminal::update_url_matches: Failed adding URL matches')
         else:
             re = (lboundry +
@@ -325,18 +352,18 @@ class Terminal(Gtk.VBox):
             self._add_regex('voip', re)
 
             re = (lboundry +
-                    "(www|ftp)[" + hostchars + "]*\.[" + hostchars +
+                    "(www|ftp)[" + hostchars + r"]*\.[" + hostchars +
                     ".]+(:[0-9]+)?(" + urlpath + ")?" + rboundry + "/?")
             self._add_regex('addr_only', re)
 
             re = (lboundry +
                     "(mailto:)?[a-zA-Z0-9][a-zA-Z0-9.+-]*@[a-zA-Z0-9]" +
-                            "[a-zA-Z0-9-]*\.[a-zA-Z0-9][a-zA-Z0-9-]+" +
+                            r"[a-zA-Z0-9-]*\.[a-zA-Z0-9][a-zA-Z0-9-]+" +
                             "[.a-zA-Z0-9-]*" + rboundry)
             self._add_regex('email', re)
 
             re = (lboundry +
-                  """news:[-A-Z\^_a-z{|}~!"#$%&'()*+,./0-9;:=?`]+@""" +
+                  r"""news:[-A-Z\^_a-z{|}~!"#$%&'()*+,./0-9;:=?`]+@""" +
                             "[-A-Za-z0-9.]+(:[0-9]+)?" + rboundry)
             self._add_regex('nntp', re)
 
@@ -580,8 +607,12 @@ class Terminal(Gtk.VBox):
         item.connect('activate', lambda x: self.emit('enumerate', False))
         menu.append(item)
 
-        item = Gtk.MenuItem.new_with_mnemonic(_('Insert _padded terminal number'))
+        item = Gtk.MenuItem.new_with_mnemonic(_('Insert zero _padded terminal number'))
         item.connect('activate', lambda x: self.emit('enumerate', True))
+        menu.append(item)
+
+        item = Gtk.MenuItem.new_with_mnemonic(_('Insert terminal _name'))
+        item.connect('activate', lambda x: self.emit('insert-term-name'))
         menu.append(item)
 
         return(menu)
@@ -721,7 +752,7 @@ class Terminal(Gtk.VBox):
             self.bgcolor.parse(self.config['background_color'])
 
         if self.config['background_type'] in ('transparent', 'image'):
-            self.bgcolor.alpha = self.config['background_darkness']
+            self.bgcolor.alpha = float(self.config['background_darkness'])
         else:
             self.bgcolor.alpha = 1
 
@@ -745,6 +776,22 @@ class Terminal(Gtk.VBox):
         dbg(("fgcolor_inactive set to: RGB(%s,%s,%s)", getattr(self.fgcolor_inactive, "red"),
                                                       getattr(self.fgcolor_inactive, "green"),
                                                       getattr(self.fgcolor_inactive, "blue")))
+
+        bg_factor = self.config['inactive_bg_color_offset']
+        if bg_factor > 1.0:
+            bg_factor = 1.0
+        self.bgcolor_inactive = self.bgcolor.copy()
+        dbg(("bgcolor_inactive set to: RGB(%s,%s,%s)", getattr(self.bgcolor_inactive, "red"),
+                                                      getattr(self.bgcolor_inactive, "green"),
+                                                      getattr(self.bgcolor_inactive, "blue")))
+
+        for bit in ['red', 'green', 'blue']:
+            setattr(self.bgcolor_inactive, bit,
+                    getattr(self.bgcolor_inactive, bit) * bg_factor)
+        dbg(("bgcolor_inactive set to: RGB(%s,%s,%s)", getattr(self.bgcolor_inactive, "red"),
+                                                      getattr(self.bgcolor_inactive, "green"),
+                                                      getattr(self.bgcolor_inactive, "blue")))
+
         colors = self.config['palette'].split(':')
         self.palette_active = []
         for color in colors:
@@ -780,7 +827,7 @@ class Terminal(Gtk.VBox):
             self.vte.set_colors(self.fgcolor_active, self.bgcolor,
                                 self.palette_active)
         else:
-            self.vte.set_colors(self.fgcolor_inactive, self.bgcolor,
+            self.vte.set_colors(self.fgcolor_inactive, self.bgcolor_inactive,
                                 self.palette_inactive)
         profiles = self.config.base.profiles
         terminal_box_style_context = self.terminalbox.get_style_context()
@@ -878,7 +925,13 @@ class Terminal(Gtk.VBox):
                 focused=self.get_toplevel().get_focussed_terminal()
                 if focused in targets: targets.remove(focused)
                 if self != focused:
-                    if self.group == focused.group:
+                    if focused.group is None and self.group is None:
+                        # Create a new group and assign currently focused
+                        # terminal to this group
+                        new_group = self.terminator.new_random_group()
+                        focused.set_group(None, new_group)
+                        focused.titlebar.update()
+                    elif self.group == focused.group:
                         new_group = None
                     else:
                         new_group = focused.group
@@ -1044,6 +1097,9 @@ class Terminal(Gtk.VBox):
         menu = TerminalPopupMenu(self)
         menu.show(widget, event)
 
+    def do_readonly_toggle(self):
+        self.vte.props.input_enabled = not self.vte.props.input_enabled
+
     def do_scrollbar_toggle(self):
         """Show or hide the terminal scrollbar"""
         self.toggle_widget_visibility(self.scrollbar)
@@ -1113,7 +1169,7 @@ class Terminal(Gtk.VBox):
         connec = widget.connect_after('draw', self.on_draw)
         widget.queue_draw_area(0, 0, alloc.width, alloc.height)
         widget.get_window().process_updates(True)
-        # finaly reset the values
+        # finally reset the values
         widget.disconnect(connec)
         widget._draw_data = None
 
@@ -1123,17 +1179,52 @@ class Terminal(Gtk.VBox):
 
         # save cairo context
         cr.save()
+
         # draw background image
+        image_mode = self.config['background_image_mode']
+        image_align_horiz = self.config['background_image_align_horiz']
+        image_align_vert = self.config['background_image_align_vert']
+
         rect = self.vte.get_allocation()
         xratio = float(rect.width) / float(self.background_image.get_width())
         yratio = float(rect.height) / float(self.background_image.get_height())
+        if image_mode == 'stretch_and_fill':
+            # keep stretched ratios
+            xratio = xratio
+            yratio = yratio
+        elif image_mode == 'scale_and_fit':
+            ratio = min(xratio, yratio)
+            xratio = yratio = ratio
+        elif image_mode == 'scale_and_crop':
+            ratio = max(xratio, yratio)
+            xratio = yratio = ratio
+        else:
+            xratio = yratio = 1
         cr.scale(xratio, yratio)
-        cr.set_source_surface(self.background_image)
+
+        xoffset = 0
+        yoffset = 0
+        if image_align_horiz == 'center':
+            xoffset = (rect.width / xratio - self.background_image.get_width()) / 2
+        elif image_align_horiz == 'right':
+            xoffset = rect.width / xratio - self.background_image.get_width()
+
+        if image_align_vert == 'middle':
+            yoffset = (rect.height / yratio - self.background_image.get_height()) / 2
+        elif image_align_vert == 'bottom':
+            yoffset = rect.height / yratio - self.background_image.get_height()
+
+        cr.set_source_surface(self.background_image, xoffset, yoffset)
         cr.get_source().set_filter(cairo.Filter.FAST)
+        if image_mode == 'tiling':
+            cr.get_source().set_extend(cairo.Extend.REPEAT)
+
         cr.paint()
+
         # draw transparent monochrome layer
         Gdk.cairo_set_source_rgba(cr, self.bgcolor)
         cr.paint()
+
         # restore cairo context
         cr.restore()
 
@@ -1230,7 +1321,7 @@ class Terminal(Gtk.VBox):
     def get_location(self, term, x, y):
         """Get our location within the terminal"""
         pos = ''
-        # get the diagonales function for the receiving widget
+        # get the diagonals function for the receiving widget
         term_alloc = term.get_allocation()
         coef1 = float(term_alloc.height)/float(term_alloc.width)
         coef2 = -float(term_alloc.height)/float(term_alloc.width)
@@ -1261,7 +1352,7 @@ class Terminal(Gtk.VBox):
             self.vte.grab_focus()
 
     def ensure_visible_and_focussed(self):
-        """Make sure that we're visible and focussed"""
+        """Make sure that we're visible and focused"""
         window = self.get_toplevel()
         try:
             topchild = window.get_children()[0]
@@ -1302,7 +1393,7 @@ class Terminal(Gtk.VBox):
 
     def on_vte_focus_out(self, _widget, _event):
         """Inform other parts of the application when focus is lost"""
-        self.vte.set_colors(self.fgcolor_inactive, self.bgcolor,
+        self.vte.set_colors(self.fgcolor_inactive, self.bgcolor_inactive,
                             self.palette_inactive)
         self.set_cursor_color()
         self.emit('focus-out')
@@ -1374,7 +1465,7 @@ class Terminal(Gtk.VBox):
     def zoom_scale(self, widget, allocation, old_data):
         """Scale our font correctly based on how big we are not vs before"""
         self.cnxids.remove_signal(self, 'size-allocate')
-        # FIXME: Is a zoom signal actualy used anywhere?
+        # FIXME: Is a zoom signal actually used anywhere?
         self.cnxids.remove_signal(self, 'zoom')
 
         new_columns = self.vte.get_column_count()
@@ -1423,7 +1514,7 @@ class Terminal(Gtk.VBox):
     def set_cwd(self, cwd=None):
         """Set our cwd"""
         if cwd is not None:
-            self.cwd = cwd
+            self.cwd = os.path.expanduser(cwd)
 
     def held_open(self, widget=None, respawn=False, debugserver=False):
         self.is_held_open = True
@@ -1663,7 +1754,7 @@ class Terminal(Gtk.VBox):
         self.vte.set_font(fontdesc)
 
     def get_cursor_position(self):
-        """Return the co-ordinates of our cursor"""
+        """Return the coordinates of our cursor"""
         # FIXME: THIS METHOD IS DEPRECATED AND UNUSED
         col, row = self.vte.get_cursor_position()
         width = self.vte.get_char_width()
@@ -1704,7 +1795,7 @@ class Terminal(Gtk.VBox):
             connec = widget.connect_after('draw', self.on_draw)
             widget.queue_draw_area(0, 0, alloc.width, alloc.height)
             widget.get_window().process_updates(True)
-            # finaly reset the values
+            # finally reset the values
             widget.disconnect(connec)
             widget._draw_data = None
 
@@ -1717,7 +1808,7 @@ class Terminal(Gtk.VBox):
         widget.get_window().process_updates(True)
         return False
 
-    def describe_layout(self, count, parent, global_layout, child_order):
+    def describe_layout(self, count, parent, global_layout, child_order, save_cwd = False):
         """Describe our layout"""
         layout = {'type': 'Terminal', 'parent': parent, 'order': child_order}
         if self.group:
@@ -1730,6 +1821,8 @@ class Terminal(Gtk.VBox):
         if title:
             layout['title'] = title
         layout['uuid'] = self.uuid
+        if save_cwd:
+            layout['directory'] = self.get_cwd()
         name = 'terminal%d' % count
         count = count + 1
         global_layout[name] = layout
@@ -1849,6 +1942,9 @@ class Terminal(Gtk.VBox):
 
     def key_go_right(self):
         self.emit('navigate', 'right')
+
+    def key_split_auto(self):
+        self.emit('split-auto', self.get_cwd())
 
     def key_split_horiz(self):
         self.emit('split-horiz', self.get_cwd())
@@ -2062,6 +2158,11 @@ class Terminal(Gtk.VBox):
 
     def key_preferences(self):
         PrefsEditor(self)
+
+    def key_preferences_keybindings(self):
+        #need to have this as a config may be preferences_default
+        #have a mapping rather than hardcoded page
+        PrefsEditor(self, cur_page = 3)
 
     def key_help(self):
         manual_index_page = manual_lookup()

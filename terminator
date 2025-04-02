@@ -21,8 +21,7 @@
 
 import sys
 import os
-import psutil
-import pwd
+
 try:
     ORIGCWD = os.getcwd()
 except OSError:
@@ -33,7 +32,7 @@ try:
     import gi
     gi.require_version('Gtk','3.0')
     # pylint: disable-msg=W0611
-    from gi.repository import Gtk, Gdk
+    from gi.repository import Gtk, Gdk, GLib
 
     if Gdk.Display.get_default() == None:
         print('You need to run terminator in an X environment. ' \
@@ -53,33 +52,14 @@ from terminatorlib.util import dbg, err
 from terminatorlib.layoutlauncher import LayoutLauncher
 from terminatorlib.configjson import ConfigJson
 
-
-# Deleting env variable fixes double char problem when broadcasting (#78)
-# Only delete if it exists, or exception occurs
-if os.environ.get('GTK_IM_MODULE') is not None:
-    del os.environ['GTK_IM_MODULE']
-
 if __name__ == '__main__':
-    # Workaround for IBus intefering with broadcast when using dead keys
-    # Environment also needs IBUS_DISABLE_SNOOPER=1, or double chars appear
-    # in the receivers.
-    username = pwd.getpwuid(os.getuid()).pw_name
-    ibus_running = False
-    for proc in psutil.process_iter():
-        try:
-            if proc.name() == 'ibus-daemon' and proc.username() == username:
-                ibus_running = True
-                break
-        except (psutil.AccessDenied) as err:
-            print("error getting details while looking for Ibus process: %s" % err)
-
-    if ibus_running:
-        os.environ['IBUS_DISABLE_SNOOPER']='1'
 
     dbus_service = None
 
     dbg ("%s starting up, version %s" % (APP_NAME, APP_VERSION))
   
+    GLib.set_prgname(APP_NAME)
+
     OPTIONS,dbus_options = terminatorlib.optionparse.parse_options()
     if OPTIONS.configjson:
         configjson = ConfigJson()
@@ -109,6 +89,12 @@ if __name__ == '__main__':
             import dbus
             try:
                 dbus_service = ipc.DBusService()
+
+                if(OPTIONS.reload):
+                    # Reload only is executed when exist at least one window,
+                    # if not there is nothing to reload
+                    sys.exit()
+
             except ipc.DBusException:
                 dbg('Unable to become master process, operating via DBus')
                 # get rid of the None and True types so dbus can handle them (empty
@@ -121,6 +107,12 @@ if __name__ == '__main__':
                 if OPTIONS.new_tab:
                     dbg('Requesting a new tab')
                     ipc.new_tab_cmdline(optionslist)
+                elif OPTIONS.toggle_visibility:
+                    dbg('requesting to toggle windows visibility')
+                    ipc.toggle_visibility_cmdline(optionslist)
+                elif OPTIONS.reload:
+                    dbg('requesting to reload configuration for all windows')
+                    ipc.reload_configuration()
                 elif OPTIONS.unhide:
                     print('requesting to unhide windows')
                     ipc.unhide_cmdline(optionslist)
@@ -135,7 +127,6 @@ if __name__ == '__main__':
         MAKER = Factory()
         TERMINATOR.set_dbus_data(dbus_service)
         TERMINATOR.reconfigure()
-        TERMINATOR.ibus_running = ibus_running
 
         try:
             dbg('Creating a terminal with layout: %s' % OPTIONS.layout)
